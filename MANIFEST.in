@@ -1,0 +1,13 @@
+# Keep private development material out of Python source distributions too.
+include FAQ.md
+include THIRD_PARTY_NOTICES.md
+include banner.svg
+include preview.png
+include install-linux.sh
+include install-windows.bat
+exclude ISSUES.md
+exclude RELEASE.md
+prune scripts
+prune .agents
+prune .codex
+global-exclude *.py[cod]

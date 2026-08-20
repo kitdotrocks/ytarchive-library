@@ -1,0 +1,3 @@
+# Optional integrations; the equivalent packaged extra is: ytarchive-lib[all]
+pypresence
+aubio

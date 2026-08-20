@@ -1,0 +1,24 @@
+# The private repository is the source of truth. The public-release exporter
+# uses these attributes through `git archive --worktree-attributes`.
+ISSUES.md export-ignore
+RELEASE.md export-ignore
+scripts export-ignore
+scripts/** export-ignore
+.agents export-ignore
+.agents/** export-ignore
+.codex export-ignore
+.codex/** export-ignore
+
+# Keep setup helpers usable when a release is prepared on another platform.
+*.sh text eol=lf
+*.bat text eol=crlf
+
+# Never include local data or generated files in a release archive, even if a
+# developer accidentally stages one of them.
+config.ini export-ignore
+playlists.txt export-ignore
+artist_profiles.json export-ignore
+artist_thumbnails/** export-ignore
+cookies.txt export-ignore
+*.log export-ignore
+*.py[cod] export-ignore

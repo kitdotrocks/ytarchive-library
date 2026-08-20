@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ytarchive-lib"
+dynamic = ["version"]
+description = "Desktop media library and player with optional Subsonic server"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6",
+    "yt-dlp[default]",
+]
+
+[project.urls]
+Repository = "https://github.com/kitdotrocks/ytarchive-library"
+Releases = "https://github.com/kitdotrocks/ytarchive-library/releases"
+
+[project.optional-dependencies]
+discord = ["pypresence"]
+bpm = ["aubio"]
+all = [
+    "pypresence",
+    "aubio",
+]
+dev = [
+    "build",
+    "pytest",
+]
+
+[project.scripts]
+ytarchive-lib = "ytarchive.cli:main"
+ytarchive-lib-server = "ytarchive.server:main"
+
+[tool.setuptools]
+packages = ["ytarchive"]
+package-dir = {"ytarchive" = "."}
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "ytarchive.__version__"}
+
+[tool.setuptools.package-data]
+ytarchive = ["logo.svg", "logo.ico"]

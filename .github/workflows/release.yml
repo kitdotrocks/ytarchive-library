@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # The workflow is present in the private source checkout so it can be
+    # exported with the application, but only public-repository tags publish.
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          version="$(python -c 'import ast; nodes=ast.parse(open("__init__.py", encoding="utf-8").read()).body; print(next(node.value.value for node in nodes if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)))')"
+          test "$GITHUB_REF_NAME" = "v$version" || {
+            echo "Tag $GITHUB_REF_NAME does not match package version $version" >&2
+            exit 1
+          }
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Build guided setup bundle
+        shell: bash
+        run: |
+          bundle_name="ytarchive-lib-${GITHUB_REF_NAME#v}"
+          mkdir "$bundle_name"
+          cp dist/*.whl "$bundle_name/"
+          cp install-linux.sh install-windows.bat README.md FAQ.md LICENSE THIRD_PARTY_NOTICES.md banner.svg preview.png "$bundle_name/"
+          zip -r "dist/${bundle_name}-setup.zip" "$bundle_name"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "ytarchive Library $GITHUB_REF_NAME" --generate-notes

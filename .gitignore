@@ -1,0 +1,41 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+env/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+.DS_Store
+Thumbs.db
+
+videos/
+thumbnails/
+exports/
+
+video_metadata.json
+video_metadata.json.bak
+app_config.json
+
+ytarchive*.log
+
+# Local configuration and archive metadata. These may contain credentials or
+# personal library information when a source checkout is used as a data root.
+config.ini
+playlists.txt
+artist_profiles.json
+artist_thumbnails/
+cookies.txt
+
+# Coverage output
+.coverage
+htmlcov/
+
+.agents/
+.codex/
