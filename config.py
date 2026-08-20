@@ -45,6 +45,7 @@ class SettingSpec:
     category: str
     label: str
     sensitive: bool = False
+    internal: bool = False
 
 
 # This is the single list used by both the configuration loader and the GUI.
@@ -72,17 +73,18 @@ SETTING_SPECS = (
     SettingSpec("DISCORD_PRESENCE_SMALL_IMAGE_VALUE", "", "Integrations", "Small Image Value"),
     SettingSpec("DISCORD_PRESENCE_DEFAULT_YOUTUBE_THUMBNAIL", "true", "Integrations", "Use YouTube thumbnail by default for YouTube songs"),
     SettingSpec("DISCORD_PRESENCE_SHOW_DEFAULT_AS_SMALL_ON_OVERRIDE", "false", "Integrations", "Show default large image as small image on song override"),
-    SettingSpec("SERVER_HOST", "0.0.0.0", "Integrations", "Subsonic host"),
-    SettingSpec("SERVER_PORT", "4533", "Integrations", "Subsonic port"),
-    SettingSpec("SERVER_USERNAME", "ytarchive", "Integrations", "Subsonic username"),
-    SettingSpec("SERVER_PASSWORD", "", "Integrations", "Subsonic password", sensitive=True),
-    SettingSpec("SERVER_PASSWORD_HASH", "", "Integrations", "Subsonic password hash", sensitive=True),
-    SettingSpec("SERVER_TIMING", "false", "Integrations", "Subsonic timing logs"),
-    SettingSpec("SERVER_AUTOSTART", "false", "Integrations", "Subsonic server"),
+    SettingSpec("SERVER_HOST", "0.0.0.0", "Integrations", "Network address"),
+    SettingSpec("SERVER_PORT", "4533", "Integrations", "Port"),
+    SettingSpec("SERVER_USERNAME", "ytarchive", "Integrations", "Username"),
+    SettingSpec("SERVER_PASSWORD", "", "Integrations", "Password", sensitive=True),
+    SettingSpec("SERVER_PASSWORD_HASH", "", "Integrations", "Password hash", sensitive=True),
+    SettingSpec("SERVER_TIMING", "false", "Integrations", "Timing logs"),
+    SettingSpec("SERVER_AUTOSTART", "false", "Integrations", "Listen on another device"),
     SettingSpec("START_MINIMIZED_TO_TRAY", "false", "Startup", "Start minimized to tray"),
     SettingSpec("CLOSE_TO_TRAY", "true", "Startup", "Keep running in background when closing window"),
     SettingSpec("CACHE_UPDATE_ON_STARTUP", "never", "Startup", "Cache update on startup"),
-    SettingSpec("CHECK_FOR_UPDATES_ON_STARTUP", "true", "Startup", "Check for updates on startup"),
+    SettingSpec("CHECK_FOR_UPDATES_ON_STARTUP", "true", "Startup", "Show update prompts on startup"),
+    SettingSpec("SKIPPED_UPDATE_VERSION", "", "Startup", "Skipped update version", internal=True),
     SettingSpec("COLOR_THEME", "system", "Appearance", "Color palette"),
     SettingSpec("SHOW_PLAYBACK_BAR", "false", "Appearance", "Show playback bar"),
     # Kept as a compatibility setting for existing config.ini files. The GUI
@@ -133,6 +135,7 @@ class AppConfig:
     close_to_tray: bool = True
     cache_update_on_startup: str = "never"
     check_for_updates_on_startup: bool = True
+    skipped_update_version: str = ""
     dark_mode: bool = False
     color_theme: str = "system"
     show_playback_bar: bool = False
@@ -399,6 +402,7 @@ def load_config(root_dir: Path | None = None) -> AppConfig:
         if str(settings.get("CACHE_UPDATE_ON_STARTUP", "never")).strip().lower() in {"ask", "never", "automatic"}
         else "never",
         check_for_updates_on_startup=_as_bool(settings.get("CHECK_FOR_UPDATES_ON_STARTUP"), True),
+        skipped_update_version=str(settings.get("SKIPPED_UPDATE_VERSION", "")).strip(),
         color_theme=color_theme,
         dark_mode=color_theme == "dark",
         show_playback_bar=_as_bool(settings.get("SHOW_PLAYBACK_BAR"), False),

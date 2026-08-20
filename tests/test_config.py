@@ -41,6 +41,7 @@ class ConfigSettingsTestCase(unittest.TestCase):
         self.assertTrue(config.close_to_tray)
         self.assertEqual(config.cache_update_on_startup, "never")
         self.assertTrue(config.check_for_updates_on_startup)
+        self.assertEqual(config.skipped_update_version, "")
         self.assertFalse(config.dark_mode)
         self.assertEqual(config.discord_application_id, "")
         self.assertEqual(config.discord_presence_image_mode, "empty")
@@ -169,6 +170,7 @@ class ConfigSettingsTestCase(unittest.TestCase):
         self.config_path.write_text(
             "[Settings]\nSERVER_AUTOSTART = false\nSTART_MINIMIZED_TO_TRAY = yes\nCLOSE_TO_TRAY = no\n"
             "CACHE_UPDATE_ON_STARTUP = automatic\nCHECK_FOR_UPDATES_ON_STARTUP = no\n"
+            "SKIPPED_UPDATE_VERSION = 1.2.0\n"
             "NUM_WORKERS = nope\nSERVER_PORT = bad\n",
             encoding="utf-8",
         )
@@ -178,6 +180,7 @@ class ConfigSettingsTestCase(unittest.TestCase):
         self.assertFalse(config.close_to_tray)
         self.assertEqual(config.cache_update_on_startup, "automatic")
         self.assertFalse(config.check_for_updates_on_startup)
+        self.assertEqual(config.skipped_update_version, "1.2.0")
         self.assertEqual(config.workers, 4)
         self.assertEqual(config.server_port, 4533)
 

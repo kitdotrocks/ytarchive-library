@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import html
+import ipaddress
 import os
 import re
 import shutil
@@ -16,7 +17,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import unquote, urlparse
 
 from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
@@ -66,7 +67,7 @@ from .metadata import MetadataStore, VideoEntry, normalize_tags
 from .player import AspectRatioWidget, MpvWidget
 from .runtime import windows_no_console_kwargs
 from .server import SimilarityCatalogCache, create_server, similar_song_entries
-from .updates import ReleaseInfo, find_update
+from .updates import ReleaseInfo, find_update, is_update_skipped
 
 
 PRESENCE_IMAGE_MODES = {
@@ -337,6 +338,65 @@ class ManagedServer(QtCore.QObject):
 
 def _address_in_use(exc: OSError) -> bool:
     return getattr(exc, "errno", None) in {98, 48, 10048} or "address already in use" in str(exc).casefold()
+
+
+def _local_network_addresses() -> list[str]:
+    """Return usable local IPv4 addresses for another device to connect to.
+
+    The server binds to all interfaces by default, so ``0.0.0.0`` is not an
+    address that can be pasted into a phone or another computer.  Hostname
+    resolution is the least surprising source when it is available; the UDP
+    probe is a local-only way to discover the preferred interface when the
+    hostname resolves only to localhost.
+    """
+    candidates: set[str] = set()
+
+    try:
+        hostname = socket.gethostname()
+        infos = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    for info in infos:
+        address = str(info[4][0]).strip()
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if parsed.version == 4 and not parsed.is_loopback and not parsed.is_unspecified:
+            candidates.add(address)
+
+    if not candidates:
+        # Connecting a UDP socket does not send packets.  TEST-NET-1 is used
+        # deliberately: it cannot identify a real remote service, while the
+        # OS still selects the interface it would use for IPv4 traffic.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("192.0.2.1", 9))
+                address = str(probe.getsockname()[0]).strip()
+            parsed = ipaddress.ip_address(address)
+            if parsed.version == 4 and not parsed.is_loopback and not parsed.is_unspecified:
+                candidates.add(address)
+        except (OSError, ValueError):
+            pass
+
+    return sorted(candidates, key=lambda value: tuple(int(part) for part in value.split(".")))
+
+
+def _server_connection_urls(host: str, port: int) -> list[str]:
+    """Build URLs a device on the same network can use for the library."""
+    host = str(host or "").strip()
+    if host in {"", "0.0.0.0", "::", "[::]", "*"}:
+        hosts = _local_network_addresses()
+    else:
+        hosts = [host.strip("[]")]
+
+    urls: list[str] = []
+    for address in hosts:
+        if not address:
+            continue
+        display_host = f"[{address}]" if ":" in address and not address.startswith("[") else address
+        urls.append(f"http://{display_host}:{int(port)}")
+    return urls
 
 
 def _missing_dependencies() -> dict[str, list[str]]:
@@ -1354,6 +1414,7 @@ class SettingsDialog(QtWidgets.QDialog):
         apply_callback, tags_changed_callback, select_video_callback, move_data_callback=None,
         switch_library_callback=None,
         library: Optional[LibraryIndex] = None,
+        server_status_provider: Optional[Callable[[], str]] = None,
     ):
         super().__init__(parent)
         self.config = config
@@ -1364,6 +1425,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.move_data_callback = move_data_callback
         self.switch_library_callback = switch_library_callback
         self.library = library
+        self.server_status_provider = server_status_provider
         self.setWindowTitle("Settings")
         self.resize(900, 620)
         self.raw_initial = read_ini_settings(config.root_dir)
@@ -1460,6 +1522,8 @@ class SettingsDialog(QtWidgets.QDialog):
         if category == "Algorithm":
             form.addRow(QtWidgets.QLabel("Artists and tags can use rarity-based scoring. BPM adds a smaller score only within the configured distance."))
         for spec in (item for item in SETTING_SPECS if item.category == category):
+            if spec.internal:
+                continue
             if category == "Appearance" and spec.key == "DARK_MODE":
                 continue
             if category == "Integrations" and spec.key in {
@@ -1495,6 +1559,15 @@ class SettingsDialog(QtWidgets.QDialog):
             self.setting_labels[spec.key] = label
             self._refresh_setting_label(spec.key)
             form.addRow(label, wrapper)
+            if category == "Integrations" and spec.key == "SERVER_AUTOSTART":
+                intro = QtWidgets.QLabel(
+                    "Share your library with a phone or another computer on the same Wi-Fi. "
+                    "This uses the Subsonic connection standard; you do not need to know anything "
+                    "about Subsonic to use it."
+                )
+                intro.setWordWrap(True)
+                intro.setStyleSheet("color: palette(mid); margin-bottom: 4px;")
+                form.addRow(intro)
             if discord_settings:
                 form.addRow(discord_settings)
             if subsonic_settings:
@@ -1863,7 +1936,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def _create_subsonic_settings(self) -> tuple[QtWidgets.QToolButton, QtWidgets.QWidget]:
         toggle = QtWidgets.QToolButton()
         toggle.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-        toggle.setToolTip("Show Subsonic server settings")
+        toggle.setToolTip("Show connection details and advanced settings")
         toggle.setFixedSize(24, 24)
         toggle.setCheckable(True)
         toggle.setChecked(self.values.get("SERVER_AUTOSTART", "false").lower() in {"1", "true", "yes", "on"})
@@ -1880,13 +1953,48 @@ class SettingsDialog(QtWidgets.QDialog):
             " border-radius: 4px;"
             "}"
         )
-        details = QtWidgets.QFormLayout(container)
-        details.setContentsMargins(14, 8, 14, 8)
-        details.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        for key in (
-            "SERVER_HOST", "SERVER_PORT", "SERVER_USERNAME", "SERVER_PASSWORD",
-            "SERVER_PASSWORD_HASH", "SERVER_TIMING",
-        ):
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+
+        heading = QtWidgets.QLabel("<b>Connect from another device</b>")
+        heading.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        layout.addWidget(heading)
+
+        instructions = QtWidgets.QLabel(
+            "Install a music app that supports Subsonic on your phone or other computer. "
+            "Choose <b>Subsonic</b> as the server type, then enter the address below. "
+            "The device must be on the same Wi-Fi network."
+        )
+        instructions.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        self.subsonic_status_label = QtWidgets.QLabel()
+        self.subsonic_status_label.setWordWrap(True)
+        layout.addWidget(self.subsonic_status_label)
+
+        address_row = QtWidgets.QHBoxLayout()
+        address_label = QtWidgets.QLabel("Server address")
+        address_label.setToolTip("Paste this address into the Subsonic app on your other device.")
+        self.subsonic_address_edit = QtWidgets.QLineEdit()
+        self.subsonic_address_edit.setReadOnly(True)
+        self.subsonic_address_edit.setPlaceholderText("No local network address detected")
+        copy_address = QtWidgets.QPushButton("Copy address")
+        copy_address.clicked.connect(self._copy_subsonic_address)
+        address_row.addWidget(address_label)
+        address_row.addWidget(self.subsonic_address_edit, 1)
+        address_row.addWidget(copy_address)
+        layout.addLayout(address_row)
+
+        self.subsonic_other_addresses_label = QtWidgets.QLabel()
+        self.subsonic_other_addresses_label.setWordWrap(True)
+        self.subsonic_other_addresses_label.setStyleSheet("color: palette(mid);")
+        layout.addWidget(self.subsonic_other_addresses_label)
+
+        credentials = QtWidgets.QFormLayout()
+        credentials.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        for key in ("SERVER_USERNAME", "SERVER_PASSWORD"):
             spec = next(item for item in SETTING_SPECS if item.key == key)
             field = self._field_for(spec.key, spec.default, spec.sensitive)
             reset = QtWidgets.QToolButton()
@@ -1903,8 +2011,52 @@ class SettingsDialog(QtWidgets.QDialog):
             label.setTextFormat(QtCore.Qt.TextFormat.RichText)
             self.setting_labels[spec.key] = label
             self._refresh_setting_label(spec.key)
-            details.addRow(label, wrapper)
+            credentials.addRow(label, wrapper)
+        layout.addLayout(credentials)
+
+        copy_details = QtWidgets.QPushButton("Copy connection details")
+        copy_details.setToolTip("Copy the address, username, and password so you can enter them on another device.")
+        copy_details.clicked.connect(self._copy_subsonic_details)
+        layout.addWidget(copy_details, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+
+        advanced_toggle = QtWidgets.QToolButton()
+        advanced_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        advanced_toggle.setText("Advanced settings")
+        advanced_toggle.setCheckable(True)
+        advanced_toggle.setChecked(False)
+        advanced_toggle.toggled.connect(self._set_subsonic_advanced_open)
+        self.subsonic_advanced_toggle = advanced_toggle
+        layout.addWidget(advanced_toggle)
+
+        advanced_container = QtWidgets.QFrame()
+        advanced_container.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        advanced_layout = QtWidgets.QFormLayout(advanced_container)
+        advanced_layout.setContentsMargins(10, 6, 10, 6)
+        advanced_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        for key in ("SERVER_HOST", "SERVER_PORT", "SERVER_PASSWORD_HASH", "SERVER_TIMING"):
+            spec = next(item for item in SETTING_SPECS if item.key == key)
+            field = self._field_for(spec.key, spec.default, spec.sensitive)
+            reset = QtWidgets.QToolButton()
+            reset.setText("↺")
+            reset.setToolTip(f"Reset {spec.label} to its default")
+            reset.clicked.connect(lambda _checked=False, name=key: self._reset_key(name))
+            row = QtWidgets.QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(field, 1)
+            row.addWidget(reset)
+            wrapper = QtWidgets.QWidget()
+            wrapper.setLayout(row)
+            label = QtWidgets.QLabel()
+            label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            self.setting_labels[spec.key] = label
+            self._refresh_setting_label(spec.key)
+            advanced_layout.addRow(label, wrapper)
+        self.subsonic_advanced_container = advanced_container
+        layout.addWidget(advanced_container)
+
         self.subsonic_settings_container = container
+        self._set_subsonic_advanced_open(False)
+        self._update_subsonic_connection_details()
         self._set_subsonic_settings_open(toggle.isChecked())
         return toggle, container
 
@@ -1916,7 +2068,92 @@ class SettingsDialog(QtWidgets.QDialog):
             container.setEnabled(self.values.get("SERVER_AUTOSTART", "false").lower() in {"1", "true", "yes", "on"})
         if toggle:
             toggle.setArrowType(QtCore.Qt.ArrowType.DownArrow if open_ else QtCore.Qt.ArrowType.RightArrow)
-            toggle.setToolTip("Hide Subsonic server settings" if open_ else "Show Subsonic server settings")
+            toggle.setToolTip("Hide connection details" if open_ else "Show connection details")
+
+    def _set_subsonic_advanced_open(self, open_: bool) -> None:
+        container = getattr(self, "subsonic_advanced_container", None)
+        toggle = getattr(self, "subsonic_advanced_toggle", None)
+        if container:
+            container.setVisible(open_)
+        if toggle:
+            toggle.setArrowType(QtCore.Qt.ArrowType.DownArrow if open_ else QtCore.Qt.ArrowType.RightArrow)
+
+    def _subsonic_status_text(self) -> str:
+        enabled = self.values.get("SERVER_AUTOSTART", "false").lower() in {"1", "true", "yes", "on"}
+        if not enabled:
+            return "Sharing is off. Turn on “Listen on another device”, then choose Apply and Close to start it."
+        if not self.values.get("SERVER_PASSWORD", "").strip() and not self.values.get("SERVER_PASSWORD_HASH", "").strip():
+            return "<b>Almost ready.</b> Choose a password above, then choose Apply and Close."
+        status = ""
+        if self.server_status_provider is not None:
+            try:
+                status = str(self.server_status_provider() or "").strip()
+            except Exception:
+                status = ""
+        lowered = status.casefold()
+        if "running on" in lowered or "already running" in lowered:
+            return "<b>Ready.</b> Your library is available to devices on this network."
+        if "password is required" in lowered:
+            return "<b>Almost ready.</b> Add a password above, then choose Apply and Close."
+        if status.startswith("Server failed:"):
+            return f"<b>Could not start sharing.</b> {html.escape(status.removeprefix('Server failed:').strip())}"
+        return "Sharing will start when you choose Apply and Close."
+
+    def _update_subsonic_connection_details(self) -> None:
+        address_edit = getattr(self, "subsonic_address_edit", None)
+        if address_edit is None:
+            return
+        try:
+            port = int(self.values.get("SERVER_PORT", "4533"))
+        except (TypeError, ValueError):
+            port = 4533
+        urls = _server_connection_urls(self.values.get("SERVER_HOST", "0.0.0.0"), port)
+        address_edit.setText(urls[0] if urls else "")
+        other = getattr(self, "subsonic_other_addresses_label", None)
+        if other is not None:
+            if len(urls) > 1:
+                other.setText("Other addresses: " + ", ".join(urls[1:]))
+            elif not urls:
+                other.setText("Could not detect a local network address. You can use this computer's IP address and port 4533.")
+            else:
+                other.setText("")
+        status = getattr(self, "subsonic_status_label", None)
+        if status is not None:
+            status.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            status.setText(self._subsonic_status_text())
+
+    def refresh_subsonic_details(self) -> None:
+        """Refresh sharing status while the settings dialog is open."""
+        self._update_subsonic_connection_details()
+
+    def _copy_subsonic_address(self) -> None:
+        address = getattr(self, "subsonic_address_edit", None)
+        value = address.text().strip() if address is not None else ""
+        if not value:
+            return
+        QtWidgets.QApplication.clipboard().setText(value)
+        status = getattr(self, "subsonic_status_label", None)
+        if status is not None:
+            status.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            status.setText("<b>Copied.</b> Paste this address into your Subsonic music app.")
+
+    def _copy_subsonic_details(self) -> None:
+        address = getattr(self, "subsonic_address_edit", None)
+        url = address.text().strip() if address is not None else ""
+        username = self.values.get("SERVER_USERNAME", "").strip()
+        password = self.values.get("SERVER_PASSWORD", "")
+        if not url or not username or not password:
+            status = getattr(self, "subsonic_status_label", None)
+            if status is not None:
+                status.setTextFormat(QtCore.Qt.TextFormat.RichText)
+                status.setText("<b>Set a username and password above first.</b>")
+            return
+        details = f"Server: {url}\nUsername: {username}\nPassword: {password}"
+        QtWidgets.QApplication.clipboard().setText(details)
+        status = getattr(self, "subsonic_status_label", None)
+        if status is not None:
+            status.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            status.setText("<b>Copied.</b> Paste these connection details into your music app.")
 
     def _field_for(self, key: str, default: str, sensitive: bool) -> QtWidgets.QWidget:
         value = self.values.get(key, default)
@@ -1931,6 +2168,8 @@ class SettingsDialog(QtWidgets.QDialog):
         }:
             field = QtWidgets.QCheckBox()
             field.setChecked(value.lower() in {"1", "true", "yes", "on"})
+            if key == "CHECK_FOR_UPDATES_ON_STARTUP":
+                field.setToolTip("When disabled, ytarchive will not check for releases or show update prompts.")
             field.toggled.connect(lambda checked, name=key: self._set_value(name, "true" if checked else "false"))
         elif key == "COLOR_THEME":
             field = QtWidgets.QComboBox()
@@ -2297,10 +2536,11 @@ class SettingsDialog(QtWidgets.QDialog):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.addWidget(QtWidgets.QLabel("All supported settings"))
-        self.advanced = QtWidgets.QTableWidget(len(SETTING_SPECS), 4)
+        visible_specs = tuple(spec for spec in SETTING_SPECS if not spec.internal)
+        self.advanced = QtWidgets.QTableWidget(len(visible_specs), 4)
         self.advanced.setHorizontalHeaderLabels(["Key", "Value", "Default", "Category"])
         self.advanced.horizontalHeader().setStretchLastSection(True)
-        for row, spec in enumerate(SETTING_SPECS):
+        for row, spec in enumerate(visible_specs):
             self.advanced_rows[spec.key] = row
             for col, value in ((0, spec.key), (2, spec.default), (3, spec.category)):
                 item = QtWidgets.QTableWidgetItem(value)
@@ -2369,6 +2609,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 toggle.setChecked(enabled)
                 del blocker
             self._set_subsonic_settings_open(enabled)
+        if key in {"SERVER_AUTOSTART", "SERVER_HOST", "SERVER_PORT", "SERVER_USERNAME", "SERVER_PASSWORD"}:
+            self._update_subsonic_connection_details()
         if key in {"DISCORD_PRESENCE_IMAGE_MODE", "DISCORD_PRESENCE_SMALL_IMAGE_MODE"}:
             self._update_presence_image_value_enabled(key)
         self._refresh_setting_label(key)
@@ -2424,6 +2666,8 @@ class SettingsDialog(QtWidgets.QDialog):
         # Updating a normal Qt control emits its valueChanged signal.  Mark the
         # reset last so an explicit default in config.ini is removed on Apply.
         self.reset_keys.add(key)
+        if key in {"SERVER_AUTOSTART", "SERVER_HOST", "SERVER_PORT", "SERVER_USERNAME", "SERVER_PASSWORD"}:
+            self._update_subsonic_connection_details()
         self._refresh_setting_label(key)
 
     def _reset_current_tab(self) -> None:
@@ -2438,7 +2682,7 @@ class SettingsDialog(QtWidgets.QDialog):
             self._refresh_tag_management()
             return
         for spec in SETTING_SPECS:
-            if spec.category == category:
+            if spec.category == category and not spec.internal:
                 self._reset_key(spec.key)
 
     def _validate(self) -> Optional[str]:
@@ -3218,6 +3462,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_worker: Optional[UpdateCheckWorker] = None
         self._update_check_scheduled = False
         self._available_update_url: Optional[str] = None
+        self._available_update_release: Optional[ReleaseInfo] = None
         self.cache_progress: dict = {}
         self._cache_dialog: Optional[CacheDialog] = None
         self.network = QtNetwork.QNetworkAccessManager(self)
@@ -3300,13 +3545,13 @@ class MainWindow(QtWidgets.QMainWindow):
         show_action.triggered.connect(self._show_from_tray)
         self.tray_status_action = menu.addAction(self.managed_server.status)
         self.tray_status_action.setEnabled(False)
-        self.stop_server_action = menu.addAction("Stop Server")
+        self.stop_server_action = menu.addAction("Stop listening on another device")
         self.stop_server_action.triggered.connect(self.managed_server.stop)
         quit_action = menu.addAction("Quit")
         quit_action.triggered.connect(self._quit_from_tray)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
-        self.tray.messageClicked.connect(self._open_available_update_page)
+        self.tray.messageClicked.connect(self._show_update_popup_from_tray)
         self.tray.show()
 
     def _tray_activated(self, reason: QtWidgets.QSystemTrayIcon.ActivationReason) -> None:
@@ -3337,6 +3582,10 @@ class MainWindow(QtWidgets.QMainWindow):
             blocker = QtCore.QSignalBlocker(subsonic_action)
             subsonic_action.setChecked(bool(self.managed_server.httpd or self.managed_server.external))
             del blocker
+        settings_dialog = getattr(self, "_settings_dialog", None)
+        refresh_sharing = getattr(settings_dialog, "refresh_subsonic_details", None)
+        if callable(refresh_sharing):
+            refresh_sharing()
         self.statusBar().showMessage(status)
         if status == SERVER_PASSWORD_REQUIRED_STATUS:
             _show_error_popup(
@@ -3361,6 +3610,24 @@ class MainWindow(QtWidgets.QMainWindow):
         subsonic_action = getattr(self, "subsonic_action", None)
         if subsonic_action is not None:
             subsonic_action.setVisible(bool(self.config.server_autostart))
+        setup_listening_action = getattr(self, "setup_listening_action", None)
+        if setup_listening_action is not None:
+            setup_listening_action.setVisible(not bool(self.config.server_autostart))
+
+    def _open_subsonic_setup(self, _checked: bool = False) -> None:
+        """Open sharing settings with the simple setup switch enabled."""
+        self._open_settings("Integrations")
+        dialog = getattr(self, "_settings_dialog", None)
+        if dialog is None:
+            return
+        enable_control = getattr(dialog, "controls", {}).get("SERVER_AUTOSTART")
+        set_checked = getattr(enable_control, "setChecked", None)
+        if callable(set_checked):
+            set_checked(True)
+        password_control = getattr(dialog, "controls", {}).get("SERVER_PASSWORD")
+        set_focus = getattr(password_control, "setFocus", None)
+        if callable(set_focus):
+            set_focus()
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -3480,10 +3747,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.discord_action.setCheckable(True)
         self.discord_action.setChecked(self.config.discord_enabled)
         self.discord_action.triggered.connect(self._toggle_discord)
-        self.subsonic_action = QtGui.QAction("Subsonic Server", self)
+        self.subsonic_action = QtGui.QAction("Listen on another device", self)
         self.subsonic_action.setCheckable(True)
         self.subsonic_action.setChecked(bool(self.managed_server.httpd or self.managed_server.external))
-        self.subsonic_action.setToolTip("Start or stop the Subsonic server for this session; does not change startup settings.")
+        self.subsonic_action.setToolTip("Start or stop sharing this library on your local network for this session.")
         self.subsonic_action.triggered.connect(self._toggle_subsonic)
         clear_selection_action = QtGui.QAction("Clear Selection", self)
         clear_selection_action.setShortcut(QtGui.QKeySequence("Escape"))
@@ -3539,6 +3806,11 @@ class MainWindow(QtWidgets.QMainWindow):
         playback_menu.addAction(clear_selection_action)
 
         integrations_menu = self.menuBar().addMenu("Integrations")
+        self.setup_listening_action = QtGui.QAction("Set up listening on another device…", self)
+        self.setup_listening_action.setToolTip("Choose a password and get the address to enter in your music app.")
+        self.setup_listening_action.triggered.connect(self._open_subsonic_setup)
+        integrations_menu.addAction(self.setup_listening_action)
+        integrations_menu.addSeparator()
         integrations_menu.addAction(self.discord_action)
         integrations_menu.addAction(self.subsonic_action)
         integrations_menu.addSeparator()
@@ -5303,32 +5575,75 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._available_update_url:
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._available_update_url))
 
-    def _show_update_available(self, release: object) -> None:
-        if self._quitting or not isinstance(release, ReleaseInfo):
+    def _show_update_popup_from_tray(self) -> None:
+        release = self._available_update_release
+        if (
+            release is None
+            or self._quitting
+            or not getattr(self.config, "check_for_updates_on_startup", True)
+            or is_update_skipped(getattr(self.config, "skipped_update_version", ""), release.version)
+        ):
             return
-        self._available_update_url = release.url
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._show_update_dialog(release)
+
+    def _skip_update_until(self, release: ReleaseInfo) -> None:
+        version = str(release.version).strip()
+        if not version:
+            return
+        try:
+            save_ini_settings(self.config.root_dir, {"SKIPPED_UPDATE_VERSION": version})
+        except Exception as exc:
+            self.statusBar().showMessage(f"Could not save update preference: {exc}")
+            return
+        self.config.skipped_update_version = version
+        self.statusBar().showMessage(f"Update prompt skipped until a version newer than {release.tag_name or version} is available.")
+
+    def _show_update_dialog(self, release: ReleaseInfo) -> None:
         version = release.tag_name or f"v{release.version}"
         message = (
             f"A newer version of {APP_NAME} is available: {version}.\n\n"
-            "Open the GitHub release page to download it?"
+            "Choose how you want to handle this update."
         )
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setIcon(QtWidgets.QMessageBox.Icon.Information)
+        dialog.setWindowTitle("Update available")
+        dialog.setText(message)
+        dialog.setInformativeText("You can open the release page now, be reminded later, or skip this version until a newer release is published.")
+        open_button = dialog.addButton("Open release page", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        skip_button = dialog.addButton("Skip until next version", QtWidgets.QMessageBox.ButtonRole.ActionRole)
+        later_button = dialog.addButton("Not now", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(later_button)
+        dialog.setEscapeButton(later_button)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is open_button:
+            self._open_available_update_page()
+        elif clicked is skip_button:
+            self._skip_update_until(release)
+
+    def _show_update_available(self, release: object) -> None:
+        if (
+            self._quitting
+            or not isinstance(release, ReleaseInfo)
+            or not getattr(self.config, "check_for_updates_on_startup", True)
+            or is_update_skipped(getattr(self.config, "skipped_update_version", ""), release.version)
+        ):
+            return
+        self._available_update_url = release.url
+        self._available_update_release = release
+        version = release.tag_name or f"v{release.version}"
         if self.tray and not self.isVisible():
             self.tray.showMessage(
                 f"{APP_NAME} update available",
-                f"Version {version} is ready to download. Click this message to open GitHub.",
+                f"Version {version} is ready. Click this message to see update options.",
                 QtWidgets.QSystemTrayIcon.MessageIcon.Information,
                 10000,
             )
             return
-        answer = QtWidgets.QMessageBox.question(
-            self,
-            "Update available",
-            message,
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
-        )
-        if answer == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._open_available_update_page()
+        self._show_update_dialog(release)
 
     def _run_startup_automation(self) -> None:
         # Give the normal startup window one event-loop turn to show and paint
@@ -5401,6 +5716,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._move_data,
             self._switch_data_root,
             library=self.library,
+            server_status_provider=lambda: self.managed_server.status,
         )
         dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.finished.connect(self._settings_dialog_closed)

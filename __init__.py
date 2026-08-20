@@ -9,7 +9,7 @@ SERVER_COMMAND = "ytarchive-lib-server"
 # work if the distribution name ever changes.
 PROJECT_REPOSITORY = "kitdotrocks/ytarchive-library"
 PROJECT_REPOSITORY_URL = f"https://github.com/{PROJECT_REPOSITORY}"
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .runtime import prepare_external_tool_path
 

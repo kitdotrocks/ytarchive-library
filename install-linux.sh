@@ -27,6 +27,18 @@ confirm() {
     esac
 }
 
+confirm_no() {
+    prompt=$1
+    printf '%s [y/N] ' "$prompt"
+    if ! read -r answer; then
+        return 1
+    fi
+    case "$answer" in
+        y|Y|yes|YES|Yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 pause_on_error() {
     say ""
     say "Setup could not finish. The message above explains what went wrong."
@@ -43,6 +55,114 @@ refresh_deno_path() {
         PATH="$HOME/.deno/bin:$PATH"
         export PATH
     fi
+}
+
+install_optional_package() {
+    package=$1
+    label=$2
+    say "Installing $label..."
+    if ! "$INSTALL_DIR/bin/python" -m pip install --upgrade "$package"; then
+        say "$label could not be installed. The app will continue without it."
+        say "Rerun this setup helper later to try again."
+    fi
+}
+
+install_optional_dependencies() {
+    discord_ready=0
+    aubio_ready=0
+    if "$INSTALL_DIR/bin/python" -c "import pypresence" >/dev/null 2>&1; then
+        discord_ready=1
+    fi
+    if "$INSTALL_DIR/bin/python" -c "import aubio" >/dev/null 2>&1; then
+        aubio_ready=1
+    fi
+    if [ "$discord_ready" -eq 1 ] && [ "$aubio_ready" -eq 1 ]; then
+        say ""
+        say "Optional integrations are already installed."
+        return 0
+    fi
+
+    say ""
+    say "Optional integrations"
+    if [ "$discord_ready" -eq 0 ]; then
+        say "  1) Discord Rich Presence"
+    fi
+    if [ "$aubio_ready" -eq 0 ]; then
+        say "  2) Automatic BPM analysis"
+    fi
+    if [ "$discord_ready" -eq 0 ] && [ "$aubio_ready" -eq 0 ]; then
+        say "  3) Both"
+    fi
+    say "  0) Skip and keep any optional packages already installed"
+    printf "Choose an option [0]: "
+    optional_choice=""
+    if ! read -r optional_choice; then
+        optional_choice=""
+    fi
+    case "$optional_choice" in
+        1)
+            if [ "$discord_ready" -eq 0 ]; then
+                install_optional_package "pypresence" "Discord Rich Presence"
+            fi
+            ;;
+        2)
+            if [ "$aubio_ready" -eq 0 ]; then
+                install_optional_package "aubio" "automatic BPM analysis"
+            fi
+            ;;
+        3)
+            if [ "$discord_ready" -eq 0 ]; then
+                install_optional_package "pypresence" "Discord Rich Presence"
+            fi
+            if [ "$aubio_ready" -eq 0 ]; then
+                install_optional_package "aubio" "automatic BPM analysis"
+            fi
+            ;;
+        ""|0)
+            say "Skipping optional integrations. Existing optional packages are kept."
+            ;;
+        *)
+            say "No optional integrations were selected. Existing optional packages are kept."
+            ;;
+    esac
+}
+
+close_running_app() {
+    lock_file="$DATA_HOME/ytarchive Library/ytarchive-lib.lock"
+    if [ ! -f "$lock_file" ]; then
+        return 0
+    fi
+
+    app_pid=$(sed -n '1p' "$lock_file" 2>/dev/null || true)
+    case "$app_pid" in
+        ""|*[!0-9]*)
+            return 0
+            ;;
+    esac
+    if [ ! -r "/proc/$app_pid/cmdline" ]; then
+        return 0
+    fi
+
+    app_command=$(tr '\0' ' ' < "/proc/$app_pid/cmdline" 2>/dev/null || true)
+    case "$app_command" in
+        *ytarchive*)
+            if ! confirm_no "An existing $APP_NAME is running. Close it and launch the updated app?"; then
+                say "Leaving the existing $APP_NAME running. The updated app was not launched."
+                return 1
+            fi
+            say "Closing the existing $APP_NAME before launching the updated app..."
+            kill -TERM "$app_pid" 2>/dev/null || true
+            for attempt in 1 2 3 4 5; do
+                if ! kill -0 "$app_pid" 2>/dev/null; then
+                    return 0
+                fi
+                sleep 1
+            done
+            say "The existing $APP_NAME did not close in time. The updated app was not launched."
+            return 1
+            ;;
+    esac
+    return 0
 }
 
 say "$APP_NAME setup"
@@ -141,7 +261,7 @@ if ! "$INSTALL_DIR/bin/python" -m pip install --upgrade pip; then
 fi
 
 PACKAGE_SOURCE=$SCRIPT_DIR
-for wheel in "$SCRIPT_DIR"/ytarchive_lib-*.whl; do
+for wheel in "$SCRIPT_DIR"/ytarchive_lib-*.whl "$SCRIPT_DIR"/wheels/ytarchive_lib-*.whl; do
     if [ -f "$wheel" ]; then
         PACKAGE_SOURCE=$wheel
         break
@@ -152,6 +272,8 @@ if ! "$INSTALL_DIR/bin/python" -m pip install --upgrade "$PACKAGE_SOURCE"; then
     say "The app could not be installed. Check your internet connection and run setup again."
     pause_on_error
 fi
+
+install_optional_dependencies
 
 if ! "$APP_LAUNCHER" shortcuts; then
     say "The app was installed, but its desktop shortcut could not be created."
@@ -175,7 +297,9 @@ say ""
 say "To update later, download a newer setup bundle and run this file again."
 
 if confirm "Start $APP_NAME now?"; then
-    "$APP_LAUNCHER" >/dev/null 2>&1 &
+    if close_running_app; then
+        "$APP_LAUNCHER" >/dev/null 2>&1 &
+    fi
 fi
 
 exit 0

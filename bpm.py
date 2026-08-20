@@ -6,15 +6,21 @@ without aubio, and tracks can still have their BPM entered by hand.
 from __future__ import annotations
 
 import statistics
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import BinaryIO, Iterator, Optional
+
+from .runtime import find_external_tool, windows_no_console_kwargs
 
 
-BPM_ANALYSIS_VERSION = 3
+BPM_ANALYSIS_VERSION = 4
 MIN_CONFIDENCE = 0.70
 INTERVAL_TOLERANCE = 0.12
+ANALYSIS_SAMPLE_RATE = 44_100
+ANALYSIS_WINDOW_SIZE = 1024
+ANALYSIS_HOP_SIZE = 512
 
 
 @dataclass(frozen=True)
@@ -65,31 +71,118 @@ def aubio_available() -> bool:
     return True
 
 
+def _ffmpeg_pcm_command(ffmpeg: str, path: Path) -> list[str]:
+    """Return a command that decodes the first audio stream to mono float PCM."""
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(ANALYSIS_SAMPLE_RATE),
+        "-acodec",
+        "pcm_f32le",
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+
+
+def _fixed_chunks(stream: BinaryIO, size: int) -> Iterator[bytes]:
+    """Yield fixed-size blocks from a pipe, preserving a final short block."""
+    pending = bytearray()
+    while True:
+        data = stream.read(size - len(pending))
+        if data:
+            pending.extend(data)
+        if len(pending) == size:
+            yield bytes(pending)
+            pending.clear()
+            continue
+        if not data:
+            if pending:
+                yield bytes(pending)
+            return
+
+
 def analyze_bpm(path: Path) -> Optional[BpmAnalysis]:
     """Return a high-confidence BPM estimate, or ``None`` when uncertain."""
     if not path.exists():
         return None
     try:
         import aubio
-        source = aubio.source(str(path), 0, 512)
-        tempo = aubio.tempo("default", 1024, 512, source.samplerate)
+        import numpy
+
+        tempo = aubio.tempo(
+            "default",
+            ANALYSIS_WINDOW_SIZE,
+            ANALYSIS_HOP_SIZE,
+            ANALYSIS_SAMPLE_RATE,
+        )
     except Exception:
+        return None
+
+    ffmpeg = find_external_tool("ffmpeg")
+    if not ffmpeg:
+        return None
+    try:
+        process = subprocess.Popen(
+            _ffmpeg_pcm_command(ffmpeg, path),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            **windows_no_console_kwargs(),
+        )
+    except (OSError, ValueError):
         return None
 
     beats: list[float] = []
     detector_confidences: list[float] = []
     total_frames = 0
     try:
-        while True:
-            samples, read = source()
+        if process.stdout is None:
+            return None
+        for raw_samples in _fixed_chunks(process.stdout, ANALYSIS_HOP_SIZE * 4):
+            samples = numpy.frombuffer(raw_samples, dtype="<f4")
+            read = int(samples.size)
+            if read < ANALYSIS_HOP_SIZE:
+                padded = numpy.zeros(ANALYSIS_HOP_SIZE, dtype=aubio.float_type)
+                padded[:read] = samples
+                samples = padded
+            else:
+                samples = samples.astype(aubio.float_type, copy=False)
             total_frames += read
             if tempo(samples)[0] != 0:
-                beats.append(total_frames / source.samplerate)
+                beats.append(total_frames / ANALYSIS_SAMPLE_RATE)
                 detector_confidences.append(max(0.0, min(1.0, float(tempo.get_confidence()))))
-            if read < source.hop_size:
-                break
+        process.stdout.close()
+        if process.wait(timeout=5) != 0:
+            return None
     except Exception:
         return None
+    finally:
+        try:
+            if process.stdout is not None and not process.stdout.closed:
+                process.stdout.close()
+        except OSError:
+            pass
+        try:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     return _estimate_from_beats(beats, detector_confidences)
 

@@ -1,5 +1,6 @@
 # Keep private development material out of Python source distributions too.
 include FAQ.md
+include AUBIO-WHEELS.md
 include THIRD_PARTY_NOTICES.md
 include banner.svg
 include preview.png

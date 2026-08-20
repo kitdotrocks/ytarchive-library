@@ -79,6 +79,20 @@ def is_newer_version(current_version: str, latest_version: str) -> bool:
     return current_pre and not latest_pre
 
 
+def is_update_skipped(skipped_version: str, latest_version: str) -> bool:
+    """Return whether *latest_version* is covered by a skipped release.
+
+    A skipped release remains suppressed until a strictly newer release is
+    found. Invalid stored state is ignored so a malformed configuration cannot
+    silence update prompts forever.
+    """
+    if not str(skipped_version).strip():
+        return False
+    if _version_parts(skipped_version) is None or _version_parts(latest_version) is None:
+        return False
+    return not is_newer_version(skipped_version, latest_version)
+
+
 def _release_from_payload(payload: object, repository: str) -> Optional[ReleaseInfo]:
     if not isinstance(payload, dict) or payload.get("draft") or payload.get("prerelease"):
         return None

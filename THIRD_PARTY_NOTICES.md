@@ -4,11 +4,12 @@ ytarchive Library is licensed under the GNU General Public License, version 3
 or any later version. See [LICENSE](LICENSE) for the project's license.
 
 This file identifies third-party software and assets used by ytarchive Library.
-The current Python package and source distribution do not bundle the external
-executables, Python dependencies, JavaScript runtimes, or font listed below;
-users install those components separately. If a future installer or portable
-bundle includes any of them, it must ship the applicable license files and
-notices for the exact versions and builds included.
+The Python package and source distribution do not bundle external executables,
+JavaScript runtimes, or fonts. The guided Windows setup ZIP does include the
+`aubio` wheels described below together with their exact corresponding source;
+other Python dependencies are installed separately. Any future portable bundle
+must ship the applicable license files, notices, and source offers for the
+exact versions and builds it includes.
 
 ## Python dependencies
 
@@ -37,7 +38,12 @@ information](https://github.com/yt-dlp/ejs#licensing) when bundling it.
 
 The optional BPM-analysis integration uses [aubio](https://github.com/aubio/aubio),
 licensed under the GNU General Public License, version 3 or any later version.
-See aubio's [COPYING file](https://github.com/aubio/aubio/blob/master/COPYING).
+The guided Windows setup bundle contains unmodified wheels built from upstream
+commit `ad5cf975aed08cc4562dd008cf9f83b12b82ffb8` (package version `0.5.0a0`).
+Each wheel embeds aubio's `AUTHORS` and `COPYING` files. The same setup bundle
+and GitHub release include `aubio-0.5.0a0-source.zip`, containing the exact
+corresponding source, the build workflow, and per-wheel build records. See
+[AUBIO-WHEELS.md](AUBIO-WHEELS.md) for the source identity and build recipe.
 
 ### pypresence
 

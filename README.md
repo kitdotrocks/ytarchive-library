@@ -92,6 +92,12 @@ You choose a separate library data folder on first launch.
 Download the newest setup ZIP, extract it, and run the setup helper again. It
 updates the existing installation and leaves your library and settings alone.
 
+When a newer release is found, the update prompt can open the release page,
+wait until the next startup, or **Skip until next version**. Skipping hides
+that release's prompt until a newer version appears. To disable update checks
+and prompts completely, open **Settings → Startup** and turn off **Show update
+prompts on startup**.
+
 ## First launch
 
 The first-run wizard asks where to keep your library data. This folder
@@ -140,25 +146,40 @@ continue to open normally.
 
 ### Listen from another device
 
-ytarchive Library includes a read-only Subsonic-compatible server. This lets a
-Subsonic music app on your phone or another computer read and play your
-library.
+You can play your library on a phone or another computer connected to the same
+home Wi-Fi. ytarchive Library includes a read-only server that works with music
+apps supporting the Subsonic connection standard. You do not need to run a
+separate server or understand the Subsonic project.
 
-1. Open **Settings → Integrations**.
-2. Enable the Subsonic server and set a strong password.
-3. Start it from **Integrations → Subsonic Server**.
-4. In your Subsonic client, enter this computer's local network address and the
-   configured port.
+1. Open **Integrations → Set up listening on another device…**.
+2. Turn on **Listen on another device** and choose a strong password.
+3. Choose **Apply and Close**. The server starts automatically.
+4. Install a music app that supports Subsonic on the other device. Choose
+   **Subsonic** as its server type, then copy the **Server address**, username,
+   and password shown in the setup panel.
 
 Keep this server on your trusted home network. Do not expose it directly to the
-public internet.
+public internet. If the other device cannot connect, make sure both devices
+are on the same Wi-Fi and allow ytarchive Library through the computer's
+firewall when prompted.
 
 ### Discord status and BPM detection
 
 Discord Rich Presence and automatic BPM detection are optional. The app works
 without them. They require the `pypresence` and `aubio` Python packages,
-respectively; see [Manual installation](#manual-installation) if you want to
-include every optional integration.
+respectively. The guided Windows and Linux setup helpers ask which of these
+integrations to install after the main app is installed, offering only features
+that are not already importable in the app environment. If both are installed,
+the prompt is skipped. You can rerun the setup helper later to add either
+integration.
+
+The guided Windows setup ZIP includes tested Windows x64 `aubio` wheels for
+CPython 3.10 through 3.14, so this option does not require Microsoft C++ Build
+Tools.
+If setup is run directly from a source checkout, or with an unsupported Python
+or architecture, it skips the optional feature instead of attempting a native
+compile. The same release includes the exact corresponding aubio source and
+license; see [AUBIO-WHEELS.md](AUBIO-WHEELS.md).
 
 ## Troubleshooting
 
@@ -208,6 +229,18 @@ To install Discord Rich Presence and automatic BPM detection too, replace
 python -m pip install ".[all]"
 ```
 
+To install only one optional integration, use its extra instead:
+
+```sh
+python -m pip install ".[discord]"  # Discord Rich Presence
+python -m pip install ".[bpm]"      # automatic BPM analysis
+```
+
+PyPI currently distributes `aubio` as source code rather than as a modern
+Windows wheel. On Windows, use the guided setup ZIP for automatic BPM analysis;
+the manual `.[bpm]` command may otherwise require a native compiler and
+additional build setup.
+
 On Linux, create an application-menu shortcut after a manual installation:
 
 ```sh
@@ -241,8 +274,9 @@ python -m build
 ```
 
 Continuous integration tests supported Python versions on Linux and Windows
-and builds the Python distribution files. Tagged public releases also contain
-the guided setup bundle used by the instructions above.
+and builds the Python distribution files. Tagged public releases also build
+and test the Windows aubio wheels, publish their exact corresponding source,
+and contain the guided setup bundle used by the instructions above.
 
 ## License
 

@@ -25,6 +25,10 @@ dependencies still requires an internet connection.
 Download the newest setup ZIP, extract it, and run the setup helper again. It
 updates the app without changing the library folder or settings.
 
+The update prompt's **Skip until next version** option hides that release until
+a newer version is published. To disable update checks and prompts completely,
+turn off **Show update prompts on startup** under **Settings → Startup**.
+
 ### How do I loop the current video or track?
 
 Focus the embedded player and press `Shift+L`. This toggles mpv's loop mode.
@@ -53,5 +57,7 @@ library data folder.
 
 ### Can I listen to the library on another device?
 
-Yes. Enable and configure the server in **Settings → Integrations → Subsonic
-server**, then connect with a Subsonic client on the same network.
+Yes. Open **Integrations → Set up listening on another device…**, turn on
+**Listen on another device**, and set a password. After applying the settings,
+the panel shows a copyable server address, username, and password to enter in a
+music app that supports Subsonic on the same Wi-Fi network.

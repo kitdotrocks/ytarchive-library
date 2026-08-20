@@ -17,10 +17,13 @@ from ytarchive.app import (
     SettingsDialog,
     _acquire_single_instance_lock,
     _library_statistics,
+    _server_connection_urls,
     _save_first_run_config,
 )
+from ytarchive.config import load_config
 from ytarchive.library import LibraryIndex, build_file_index
 from ytarchive.metadata import MetadataStore, VideoEntry
+from ytarchive.updates import ReleaseInfo
 
 
 class _StartupConfig:
@@ -245,6 +248,42 @@ class DependencyNoticeTestCase(unittest.TestCase):
         self.assertEqual(status, "Playback and download tools ready")
 
 
+class UpdatePromptTestCase(unittest.TestCase):
+    def test_skipped_release_does_not_open_update_prompt(self) -> None:
+        harness = mock.Mock()
+        harness._quitting = False
+        harness.config = mock.Mock(check_for_updates_on_startup=True, skipped_update_version="1.2.0")
+        harness._show_update_dialog = mock.Mock()
+        release = ReleaseInfo("v1.2.0", "1.2.0", "https://example.test/release")
+
+        MainWindow._show_update_available(harness, release)
+
+        harness._show_update_dialog.assert_not_called()
+
+    def test_disabled_update_prompts_do_not_open_update_prompt(self) -> None:
+        harness = mock.Mock()
+        harness._quitting = False
+        harness.config = mock.Mock(check_for_updates_on_startup=False, skipped_update_version="")
+        harness._show_update_dialog = mock.Mock()
+        release = ReleaseInfo("v1.2.0", "1.2.0", "https://example.test/release")
+
+        MainWindow._show_update_available(harness, release)
+
+        harness._show_update_dialog.assert_not_called()
+
+    def test_skipping_update_persists_the_release_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = _save_first_run_config(root, remember_root=False)
+            harness = mock.Mock(config=config)
+            release = ReleaseInfo("v1.2.0", "1.2.0", "https://example.test/release")
+
+            MainWindow._skip_update_until(harness, release)
+
+            self.assertEqual(config.skipped_update_version, "1.2.0")
+            self.assertEqual(load_config(root).skipped_update_version, "1.2.0")
+
+
 class FirstRunSetupTestCase(unittest.TestCase):
     def test_first_run_setup_creates_one_self_contained_data_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -323,6 +362,18 @@ class LibrarySwitchTestCase(unittest.TestCase):
 
 
 class IntegrationMenuTestCase(unittest.TestCase):
+    def test_server_connection_urls_replace_wildcard_host_with_lan_addresses(self) -> None:
+        with mock.patch("ytarchive.app._local_network_addresses", return_value=["192.168.1.20", "10.0.0.5"]):
+            self.assertEqual(
+                _server_connection_urls("0.0.0.0", 4533),
+                ["http://192.168.1.20:4533", "http://10.0.0.5:4533"],
+            )
+
+    def test_server_connection_urls_keep_explicit_host(self) -> None:
+        with mock.patch("ytarchive.app._local_network_addresses") as local_addresses:
+            self.assertEqual(_server_connection_urls("music-pc", 5000), ["http://music-pc:5000"])
+            local_addresses.assert_not_called()
+
     def test_subsonic_runtime_toggle_does_not_edit_startup_setting(self) -> None:
         managed_server = mock.Mock()
         harness = mock.Mock(managed_server=managed_server)
@@ -372,20 +423,36 @@ class IntegrationMenuTestCase(unittest.TestCase):
         harness.config = mock.Mock(discord_enabled=False, server_autostart=True)
         harness.discord_action = mock.Mock()
         harness.subsonic_action = mock.Mock()
+        harness.setup_listening_action = mock.Mock()
 
         MainWindow._update_integration_action_visibility(harness)
 
         harness.discord_action.setVisible.assert_called_once_with(False)
         harness.subsonic_action.setVisible.assert_called_once_with(True)
+        harness.setup_listening_action.setVisible.assert_called_once_with(False)
 
         harness.discord_action.reset_mock()
         harness.subsonic_action.reset_mock()
+        harness.setup_listening_action.reset_mock()
         harness.config.discord_enabled = True
         harness.config.server_autostart = False
         MainWindow._update_integration_action_visibility(harness)
 
         harness.discord_action.setVisible.assert_called_once_with(True)
         harness.subsonic_action.setVisible.assert_called_once_with(False)
+        harness.setup_listening_action.setVisible.assert_called_once_with(True)
+
+    def test_setup_action_opens_integrations_and_enables_sharing(self) -> None:
+        enable = mock.Mock()
+        password = mock.Mock()
+        dialog = mock.Mock(controls={"SERVER_AUTOSTART": enable, "SERVER_PASSWORD": password})
+        harness = mock.Mock(_settings_dialog=dialog)
+
+        MainWindow._open_subsonic_setup(harness)
+
+        harness._open_settings.assert_called_once_with("Integrations")
+        enable.setChecked.assert_called_once_with(True)
+        password.setFocus.assert_called_once_with()
 
     def test_integration_settings_shortcut_selects_integrations_page(self) -> None:
         navigation = mock.Mock()

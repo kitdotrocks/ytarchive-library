@@ -32,11 +32,11 @@ DEPENDENCY_HELP = {
     "yt-dlp": f"Rerun the {APP_NAME} setup helper, or run: python -m pip install -U \"yt-dlp[default]\".",
     "yt-dlp-ejs": "Rerun the setup helper, or reinstall yt-dlp with its default extras.",
     "yt-dlp-js-runtime": "Install Deno from https://docs.deno.com/runtime/getting_started/installation/, then restart the app.",
-    "pypresence": "Install pypresence only if you want Discord Rich Presence.",
+    "pypresence": f"Rerun the {APP_NAME} setup helper and choose Discord Rich Presence, or install pypresence in the Python environment used by the app.",
     "mpv": "Rerun the setup helper, or install mpv from https://mpv.io/installation/, then restart the app.",
     "ffmpeg": "Rerun the setup helper, or install FFmpeg from https://ffmpeg.org/download.html, then restart the app.",
     "ffprobe": "Install FFmpeg, which normally includes ffprobe, then restart the app.",
-    "aubio": "Install aubio only if you want automatic BPM analysis; BPM can still be entered manually.",
+    "aubio": f"Rerun the {APP_NAME} setup helper and choose automatic BPM analysis, or install aubio in the Python environment used by the app. BPM can still be entered manually.",
 }
 
 

@@ -13,6 +13,7 @@ from ytarchive.updates import (  # noqa: E402
     fetch_latest_release,
     find_update,
     is_newer_version,
+    is_update_skipped,
     is_valid_repository,
 )
 
@@ -72,6 +73,12 @@ class UpdateVersionTestCase(unittest.TestCase):
         with mock.patch("ytarchive.updates.fetch_latest_release", return_value=release):
             self.assertEqual(find_update("0.1.0"), release)
             self.assertIsNone(find_update("0.2.0"))
+
+    def test_skipped_release_stays_hidden_until_a_newer_release(self) -> None:
+        self.assertTrue(is_update_skipped("1.2.0", "1.2.0"))
+        self.assertTrue(is_update_skipped("1.2.0", "1.1.0"))
+        self.assertFalse(is_update_skipped("1.2.0", "1.3.0"))
+        self.assertFalse(is_update_skipped("not-a-version", "1.3.0"))
 
 
 if __name__ == "__main__":
